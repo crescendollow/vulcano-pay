@@ -1,2 +1,2 @@
 # vulcano-pay
-Proyecto Vulcano perteneciente a los imstegrantes del grupo pip install rezandoquefuncione
+Proyecto Vulcano perteneciente a los integrantes del grupo pip install rezandoquefuncione
