@@ -1,8 +1,3 @@
-"""
-Validadores sanitizadores declarativos para la CLI de Vulcano Pay.
-Módulo a cargo del Integrante 1.
-"""
-
 import argparse
 import re
 from urllib.parse import urlparse

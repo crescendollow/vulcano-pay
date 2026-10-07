@@ -1,8 +1,3 @@
-"""
-Paquete principal de la plataforma Vulcano Telemetry.
-Exposición pública de la API interna del módulo.
-"""
-
 from .exceptions import (
     VulcanoError,
     SQSConnectionError,

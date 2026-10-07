@@ -1,8 +1,3 @@
-"""
-Excepciones semánticas personalizadas para el proyecto Vulcano Pay (SQS + Webhooks).
-Módulo a cargo del Integrante 1.
-"""
-
 class VulcanoError(Exception):
     """Excepción base para todos los errores del ecosistema Vulcano."""
     pass
