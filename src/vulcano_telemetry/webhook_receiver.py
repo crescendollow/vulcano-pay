@@ -9,13 +9,13 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
-from functools import partial
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status
 
 from .core_sqs import get_sqs_client, send_event
 from .exceptions import (
+    QueueTimeoutError,
     SQSConnectionError,
     WebhookSignatureError,
     WebhookTimestampError,
@@ -30,7 +30,7 @@ DEFAULT_QUEUE_URL = "http://localhost:4566/000000000000/vulcano-events-queue"
 WEBHOOK_ID_HEADER = "X-Webhook-Id"
 
 # Tiempo máximo esperando que SQS confirme. Sin este límite, si LocalStack
-# no responde, Boto3 reintenta durante ~30 s y el emisor queda colgado.
+# no responde, Boto3 sigue reintentando (~18 s) y el emisor queda colgado.
 PUBLISH_TIMEOUT_SEC = 3.0
 
 # Si el emisor manda su propio X-Webhook-Id se respeta (sirve para detectar
@@ -43,6 +43,27 @@ def _resolve_webhook_id(header_value: str | None) -> str:
     if header_value and _WEBHOOK_ID_PATTERN.fullmatch(header_value):
         return header_value
     return uuid.uuid4().hex
+
+
+def _build_sqs_publisher(
+    endpoint_url: str, queue_url: str
+) -> Callable[[dict], str]:
+    """
+    Arma la función que publica cada evento en SQS con core_sqs (Boto3).
+
+    El cliente Boto3 se crea una sola vez al iniciar. Crearlo en cada
+    request cuesta cientos de ms y rompería el objetivo de 100 ms.
+    """
+    sqs_client = get_sqs_client(endpoint_url)
+
+    def publish(event: dict) -> str:
+        # Se pasa el trace_id del receptor: si no, send_event genera otro y
+        # el mismo webhook queda con dos TraceId distintos en logs y en SQS.
+        return send_event(
+            sqs_client, queue_url, event, trace_id=event["trace_id"]
+        )
+
+    return publish
 
 
 def create_app(
@@ -71,10 +92,7 @@ def create_app(
         )
 
     if publisher is None:
-        # El cliente Boto3 se crea una sola vez al iniciar. Crearlo en cada
-        # request cuesta cientos de ms y rompería el objetivo de 100 ms.
-        sqs_client = get_sqs_client(endpoint_url)
-        publisher = partial(send_event, sqs_client, queue_url)
+        publisher = _build_sqs_publisher(endpoint_url, queue_url)
 
     app = FastAPI(title="Vulcano Webhook Receiver")
 
@@ -164,7 +182,7 @@ def create_app(
             message_id = await asyncio.wait_for(
                 asyncio.to_thread(publisher, event), timeout=publish_timeout
             )
-        except (SQSConnectionError, TimeoutError) as err:
+        except (SQSConnectionError, QueueTimeoutError, TimeoutError) as err:
             if isinstance(err, TimeoutError):
                 # Si SQS confirma tarde, el reintento del emisor puede
                 # generar un duplicado: el webhook_id permite descartarlo.
