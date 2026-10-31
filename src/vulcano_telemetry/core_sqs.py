@@ -1,20 +1,3 @@
-"""Cliente Boto3 y operaciones de mensajería SQS con soporte para LocalStack.
-
-Responsabilidad del Integrante 2 (Ingeniero de Mensajería Asíncrona SQS).
-
-Funciones públicas:
-    get_sqs_client      -> cliente Boto3 apuntando a LocalStack.
-    setup_queues        -> crea la cola principal + DLQ (RedrivePolicy).
-    get_queue_url       -> resuelve la URL de una cola por nombre.
-    send_event          -> productor (JSON + MessageAttributes).
-    receive_events      -> consumidor resiliente con Long Polling.
-    delete_event        -> borrado explícito tras procesamiento exitoso.
-
-Alias de compatibilidad (nombres usados en la plantilla de referencia):
-    produce_event = send_event
-    consume_events = receive_events
-"""
-
 import json
 import logging
 import uuid
@@ -330,9 +313,5 @@ def delete_event(sqs_client, queue_url: str, receipt_handle: str) -> None:
         ) from err
     logger.info("Mensaje eliminado de SQS tras procesamiento exitoso.")
 
-
-# ---------------------------------------------------------------------------
-# Alias de compatibilidad con la plantilla de referencia
-# ---------------------------------------------------------------------------
 produce_event = send_event
 consume_events = receive_events
