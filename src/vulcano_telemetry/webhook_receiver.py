@@ -26,7 +26,7 @@ logger = logging.getLogger("vulcano_engine.receiver")
 
 SECRET_ENV_VAR = "VULCANO_WEBHOOK_SECRET"
 DEFAULT_ENDPOINT_URL = "http://localhost:4566"
-DEFAULT_QUEUE_URL = "http://localhost:4566/000000000000/vulcano-events-queue"
+DEFAULT_QUEUE_URL = "http://localhost:4566/000000000000/vulcano-prueba-queue"
 WEBHOOK_ID_HEADER = "X-Webhook-Id"
 
 # Tiempo máximo esperando que SQS confirme. Sin este límite, si LocalStack
