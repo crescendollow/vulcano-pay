@@ -1,4 +1,4 @@
-# README - Proyecto Vulcano (Vulcano Pay)
+# Proyecto Vulcano (Vulcano Pay)
 
 Plataforma de notificaciones financieras desarrollada para el Trabajo Práctico N° 2 (Proyecto Vulcano) de *Programación para Automatización II*.
 
