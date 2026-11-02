@@ -13,7 +13,7 @@ from .webhook_crypto import generate_signature
 from .logging_engine import setup_vulcano_logging, stop_vulcano_logging
 
 # ---------------------------------------------------------
-# Integrante 5: Despachador de Webhooks
+# Despachador de Webhooks
 # ---------------------------------------------------------
 def dispatch_webhook(target_url: str, secret: str, payload_dict: dict, trace_id: str = "N/A"):
     """Firma el payload y lo envía por HTTP POST al receptor."""
@@ -27,7 +27,7 @@ def dispatch_webhook(target_url: str, secret: str, payload_dict: dict, trace_id:
     req = urllib.request.Request(target_url, data=payload_bytes, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Webhook-Signature", header_value)
-
+    #envio del mensanje usando urllib.request y exige que el receptor responda con 202 accepted
     try:
         with urllib.request.urlopen(req, timeout=5) as response:
             if response.status != 202:
@@ -70,8 +70,7 @@ def cmd_start_dispatcher(args):
 def cmd_start_receiver(args):
     print(f"[*] Iniciando servidor receptor en el puerto {args.port}...")
     print("[!] (Este comando requiere que implementes el webhook_receiver.py con Flask/FastAPI)")
-    # Nota: El Integrante 3 debería tener una función acá para levantar el servidor.
-    # Si no la tiene, te va a tirar un error. ¡Avisame si pasa eso!
+
     try:
         from .webhook_receiver import run_receiver
         run_receiver(port=args.port, secret=args.secret)
@@ -81,7 +80,7 @@ def cmd_start_receiver(args):
 
 
 # ---------------------------------------------------------
-# Integrante 5: Configuración del CLI y Excepciones
+# Configuración del CLI y Excepciones
 # ---------------------------------------------------------
 def build_parser():
     parser = argparse.ArgumentParser(description="Vulcano Pay CLI")
@@ -119,7 +118,6 @@ def main():
         args = parser.parse_args()
         args.func(args)
 
-    # Acá usamos el except* que pide el PDF
     except* WebhookSignatureError as eg:
         print(f"[!] Error de Seguridad: Firma inválida. {eg.exceptions}")
     except* WebhookTimestampError as eg:
@@ -132,7 +130,6 @@ def main():
         print(f"[!] Error inesperado: {eg.exceptions}")
     
     finally:
-        # Apagado ordenado que pide el PDF (sin return, break o continue)
         print("[*] Cerrando aplicación y vaciando logs...")
         stop_vulcano_logging(logger)
 
