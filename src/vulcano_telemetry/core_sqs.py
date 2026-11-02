@@ -1,20 +1,3 @@
-"""Cliente Boto3 y operaciones de mensajería SQS con soporte para LocalStack.
-
-Responsabilidad del Integrante 2 (Ingeniero de Mensajería Asíncrona SQS).
-
-Funciones públicas:
-    get_sqs_client      -> cliente Boto3 apuntando a LocalStack.
-    setup_queues        -> crea la cola principal + DLQ (RedrivePolicy).
-    get_queue_url       -> resuelve la URL de una cola por nombre.
-    send_event          -> productor (JSON + MessageAttributes).
-    receive_events      -> consumidor resiliente con Long Polling.
-    delete_event        -> borrado explícito tras procesamiento exitoso.
-
-Alias de compatibilidad (nombres usados en la plantilla de referencia):
-    produce_event = send_event
-    consume_events = receive_events
-"""
-
 import json
 import logging
 import uuid
@@ -49,11 +32,7 @@ SQS_MAX_BATCH = 10  # Límite duro de SQS para receive_message
 # Cliente
 # ---------------------------------------------------------------------------
 def get_sqs_client(endpoint_url: str = DEFAULT_ENDPOINT_URL):
-    """Crea un cliente Boto3 SQS configurado para LocalStack.
-
-    Se usan credenciales simuladas (LocalStack no las valida). El
-    ``read_timeout`` es mayor al máximo de Long Polling (20 s) para que
-    Boto3 no corte la conexión mientras espera mensajes.
+    """Creacion de un cliente Boto3 SQS configurado para LocalStack.
     """
     config = Config(
         connect_timeout=5,
@@ -82,10 +61,6 @@ def _wrap_boto_error(
     err: Exception, message: str, **context: Any
 ) -> Exception:
     """Traduce un error nativo de Boto3 a una excepción semántica.
-
-    - Timeouts de red      -> QueueTimeoutError
-    - ClientError / resto  -> SQSConnectionError
-
     Agrega contexto con ``add_note()`` (PEP 678). El llamador debe
     re-lanzarla encadenada: ``raise _wrap_boto_error(...) from err``.
     """
@@ -246,11 +221,6 @@ def receive_events(
     ``delete_event()`` solo cuando la entrega fue exitosa. Si no se
     borra, el mensaje reaparece tras ``visibility_timeout`` y, superado
     ``maxReceiveCount``, SQS lo deriva a la DLQ.
-
-    Los mensajes cuyo cuerpo no es JSON válido (Poison Messages) se
-    registran como ``CorruptedMessageError`` y se dejan en la cola para
-    que SQS los derive a la DLQ, sin frenar el resto del lote.
-
     Returns:
         Lista de dicts con ``message_id``, ``receipt_handle``, ``body``,
         ``attributes`` y ``receive_count``.
@@ -283,9 +253,7 @@ def receive_events(
                 f"Mensaje SQS corrupto ID {message_id}"
             )
             corrupt.add_note(f"QueueUrl: {queue_url}")
-            corrupt.__cause__ = err  # encadenado explícito
-            # Se registra sin interrumpir el lote; el mensaje no se
-            # borra, así SQS lo deriva a la DLQ tras maxReceiveCount.
+            corrupt.__cause__ = err
             logger.error(
                 "Mensaje venenoso detectado; se deja en la cola "
                 "para derivación a la DLQ",
