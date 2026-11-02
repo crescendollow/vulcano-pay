@@ -1,0 +1,25 @@
+
+.venv/
+venv/
+env/
+
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Archivos de logs y rotación comprimida
+*.log
+*.log.gz
+*.gz
+
+# Archivos del sistema operativo (macOS / Windows)
+.DS_Store
+Thumbs.db
+
+.vscode/
+.idea/
+
+
+.env
