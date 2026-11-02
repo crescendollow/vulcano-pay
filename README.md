@@ -85,9 +85,59 @@ vulcano-pay/
 ## 4. Módulos y Requisitos Técnicos
 
 ### 4.1. Excepciones Semánticas y Sanitización CLI (Integrante 1)
-- **`exceptions.py`**: La clase base `VulcanoError` hereda de `Exception` (nunca de `BaseException`). Subclases: `SQSConnectionError`, `QueueTimeoutError`, `CorruptedMessageError`, `WebhookSignatureError`, `WebhookTimestampError`, `WebhookDeliveryError`.
-- **`sanitizer.py`**: Validadores `parse_queue_name` (regex `^vulcano-[a-z0-9-]+-queue$`), `parse_wait_time` (1-20s), `parse_webhook_url` (HTTP/HTTPS) y `parse_secret_key` (>=16 chars). Todos lanzan `argparse.ArgumentTypeError`.
-- **`__init__.py`**: Exporta la API pública mediante `__all__`.
+
+Este rol define errores de dominio reconocibles y valida los argumentos de entrada antes de que los comandos del CLI ejecuten operaciones sobre SQS o webhooks.
+
+#### `exceptions.py`: jerarquía de errores
+
+Todas las excepciones propias heredan de `VulcanoError`, que a su vez hereda de `Exception`. Esto permite capturar los errores del proyecto sin interceptar señales de control del proceso, como `KeyboardInterrupt` o `SystemExit`.
+
+```text
+VulcanoError
+├── SQSConnectionError       # Fallos al conectarse o comunicarse con SQS
+├── QueueTimeoutError        # Tiempo de espera agotado al operar con SQS
+├── CorruptedMessageError    # Mensaje recibido con contenido JSON corrupto
+├── WebhookSignatureError   # Firma ausente, malformada o inválida
+├── WebhookTimestampError   # Timestamp del webhook fuera de tolerancia
+└── WebhookDeliveryError    # Fallo al entregar el webhook por HTTP
+```
+
+Los módulos de mensajería, criptografía y despacho usan estas clases para distinguir fallos operativos, de formato y de seguridad. Las excepciones conservan sus mensajes y pueden encadenarse con la causa original para facilitar el diagnóstico.
+
+#### `sanitizer.py`: validadores de argumentos
+
+Cada validador devuelve el valor validado en el tipo esperado o genera `argparse.ArgumentTypeError`, que `argparse` presenta como un error de entrada del CLI:
+
+| Validador | Regla | Resultado |
+| :--- | :--- | :--- |
+| `parse_queue_name(value)` | El nombre debe coincidir con `^vulcano-[a-z0-9-]+-queue$`. | Devuelve el nombre como `str`. |
+| `parse_wait_time(value)` | Debe ser un entero entre 1 y 20, inclusive. | Devuelve el tiempo como `int`. |
+| `parse_webhook_url(value)` | Debe usar el esquema `http` o `https` y tener una autoridad (`netloc`). | Devuelve la URL como `str`. |
+| `parse_secret_key(value)` | Debe tener al menos 16 caracteres. | Devuelve la clave como `str`. |
+
+Ejemplo de uso desde el CLI:
+
+```console
+$ python -m src.vulcano_telemetry.app_operator start-dispatcher \
+    --queue-name vulcano-events-queue \
+    --target-url http://localhost:8000/webhook \
+    --secret mi_clave_secreta_123 \
+    --wait-time 5
+```
+
+Si un valor no cumple su regla, `argparse` informa qué argumento es inválido y termina con código de salida `2`, sin iniciar el comando.
+
+#### `__init__.py`: API pública del paquete
+
+El paquete declara su API con `__all__`, exponiendo `VulcanoError` y sus subclases junto con los cuatro validadores. Se pueden importar desde el paquete sin depender de las rutas internas:
+
+```python
+from vulcano_telemetry import (
+    SQSConnectionError,
+    parse_queue_name,
+    parse_secret_key,
+)
+```
 
 ### 4.2. Criptografía y Receptor HTTP (Integrante 3)
 Este rol autentica cada webhook y responde rápido en la frontera HTTP. Solo llega a SQS lo que tiene una firma válida y está dentro de la ventana de tiempo.
