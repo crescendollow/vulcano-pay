@@ -5,7 +5,7 @@ import json
 import time
 from urllib.error import URLError
 
-# Importamos lo que hicieron los integrantes# Importamos lo que hicieron los integrantes (CON puntito)
+
 from .exceptions import VulcanoError, WebhookDeliveryError, WebhookSignatureError, WebhookTimestampError, SQSConnectionError
 from .sanitizer import parse_queue_name, parse_wait_time, parse_webhook_url, parse_secret_key
 from .core_sqs import get_sqs_client, setup_queues, send_event, receive_events, delete_event
@@ -73,8 +73,8 @@ def cmd_start_receiver(args):
     # Nota: El Integrante 3 debería tener una función acá para levantar el servidor.
     # Si no la tiene, te va a tirar un error. ¡Avisame si pasa eso!
     try:
-        from webhook_receiver import run_server
-        run_server(port=args.port, secret=args.secret, queue_name=args.queue_name)
+        from .webhook_receiver import run_receiver
+        run_receiver(port=args.port, secret=args.secret)
     except ImportError:
         print("[-] ERROR: Falta la función 'run_server' en webhook_receiver.py")
         sys.exit(1)
