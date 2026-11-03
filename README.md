@@ -257,7 +257,143 @@ finally:
 ```
 
 ### 4.3. Mensajería SQS y DLQ (Integrante 2)
-- **`core_sqs.py`**: Conexión Boto3 a LocalStack (`http://localhost:4566`). Vinculación de `vulcano-events-queue` con `vulcano-events-dlq` usando `RedrivePolicy` (`maxReceiveCount=3`).
+`core_sqs.py` es la única capa del proyecto que se comunica con SQS. Ningún otro módulo usa Boto3 directamente: el receptor (I3) publica eventos y el despachador (I5) los consume y los borra mediante las funciones de este archivo. De esta forma el resto del sistema no depende de los detalles del SDK y, si en el futuro se cambiara de broker, solo habría que reescribir este módulo.
+
+| Función | Qué hace |
+| :--- | :--- |
+| `get_sqs_client(endpoint_url="http://localhost:4566")` | Crea el cliente Boto3 de SQS apuntando a LocalStack, con credenciales ficticias (`test` / `test`), región `us-east-1`, timeouts y política de reintentos. |
+| `setup_queues(sqs_client, queue_name, dlq_name, max_receive_count=3)` | Crea la DLQ y la cola principal y las vincula con una `RedrivePolicy`. Devuelve la tupla `(queue_url, dlq_url)`. |
+| `get_queue_url(sqs_client, queue_name)` | Obtiene la URL de una cola existente a partir de su nombre. |
+| `send_event(sqs_client, queue_url, event_data, event_topic="vulcano.event", trace_id=None)` | Publica un evento JSON con atributos de mensaje y devuelve el `MessageId`. |
+| `receive_events(sqs_client, queue_url, wait_time=10, max_messages=5, visibility_timeout=30)` | Consume mensajes con *Long Polling* y devuelve una lista de diccionarios. **No borra** los mensajes. |
+| `delete_event(sqs_client, queue_url, receipt_handle)` | Borra explícitamente un mensaje ya procesado. |
+| `produce_event`, `consume_events` | Alias de `send_event` y `receive_events`, para mantener compatibilidad con el código de referencia de la cátedra. |
+
+#### Ciclo de vida de un mensaje
+
+```text
+send_event --> vulcano-events-queue --> receive_events --> despachador (I5)
+                       ^                                          |
+                       |                         HTTP 2xx --> delete_event (fin)
+                       |                                          |
+                       |                         falla --> no se borra el mensaje
+                       |                                          |
+                       +------ reaparece al vencer el VisibilityTimeout
+                       |
+        recepciones > maxReceiveCount (3)
+                       |
+                       v
+               vulcano-events-dlq
+```
+
+SQS nunca elimina un mensaje por el solo hecho de entregarlo. Al recibirlo, el mensaje queda invisible durante el `VisibilityTimeout`. Si el despachador lo procesa bien y llama a `delete_event`, el ciclo termina. Si no lo borra, el mensaje vuelve a ser visible y se reintenta. Cuando la cantidad de recepciones supera `maxReceiveCount`, SQS lo mueve solo a `vulcano-events-dlq`. Este mismo mecanismo cubre dos casos: un destino caído y un mensaje corrupto (*poison message*).
+
+#### `get_sqs_client`: conexión a LocalStack
+
+- **`endpoint_url`** es configurable. Con `http://localhost:4566` las llamadas van a LocalStack; sin ese parámetro, Boto3 intentaría conectarse a AWS real.
+- Las credenciales `test` / `test` son ficticias: LocalStack no las valida, pero Boto3 exige que existan. Por eso el repositorio no contiene secretos reales.
+- **Timeouts:** `connect_timeout=5` hace que la conexión falle rápido si LocalStack no responde, y `read_timeout=30` es mayor al máximo del *Long Polling* (20 s), para que Boto3 no corte una espera legítima y la confunda con una falla.
+- **Reintentos:** modo `standard` con hasta 3 intentos en total ante errores transitorios.
+
+#### `setup_queues`: cola principal y DLQ
+
+1. Crea `vulcano-events-dlq`. Se hace primero porque la cola principal necesita su ARN.
+2. Obtiene el ARN de la DLQ con `get_queue_attributes`.
+3. Crea `vulcano-events-queue` con una `RedrivePolicy` (`deadLetterTargetArn` y `maxReceiveCount=3`) y un `VisibilityTimeout` de 30 segundos. SQS exige que todos los atributos sean cadenas, por eso la política se serializa con `json.dumps` y el contador se convierte con `str()`.
+
+`create_queue` es idempotente: si la cola ya existe con los mismos atributos, devuelve la URL existente, así que `setup_queues` se puede llamar en cada arranque. Si existe con atributos distintos, SQS rechaza la operación y el error se traduce a `SQSConnectionError`.
+
+#### `send_event`: productor
+
+El evento se serializa a JSON (`ensure_ascii=False`, para conservar tildes y eñes) y se publica con `send_message`. Los metadatos viajan como atributos del mensaje y no dentro del cuerpo, así el consumidor puede leerlos sin interpretar el JSON:
+
+| Atributo | Contenido |
+| :--- | :--- |
+| `TraceId` | Identificador de correlación. Si no se pasa uno, se genera un `uuid4`. El receptor (I3) le entrega el suyo para que logs y SQS compartan el mismo valor. |
+| `EventTopic` | Tipo de evento, por ejemplo `payment.completed`. Por defecto, `vulcano.event`. |
+| `Timestamp` | Momento en que se encoló, en ISO 8601 UTC. |
+
+Tras publicar, la función registra el evento con `extra={"message_id": ..., "trace_id": ...}`. El formateador de I4 toma esos campos y los muestra como `MessageId` y `TraceId` en el log JSON.
+
+#### `receive_events`: consumidor con Long Polling
+
+1. Llama a `receive_message` con `WaitTimeSeconds` (SQS retiene la conexión hasta ese tiempo y responde apenas llega un mensaje), `VisibilityTimeout`, `MaxNumberOfMessages` (acotado a 10, el máximo de SQS) y pide todos los atributos de mensaje y `ApproximateReceiveCount`.
+2. Interpreta el cuerpo de cada mensaje con `json.loads`.
+3. Devuelve una lista de diccionarios con estos campos:
+
+| Campo | Contenido |
+| :--- | :--- |
+| `message_id` | Identificador permanente del mensaje, útil para trazabilidad. |
+| `receipt_handle` | Comprobante de **esta** recepción. Es lo que necesita `delete_event` para borrar. |
+| `body` | Cuerpo ya convertido a objeto Python. |
+| `attributes` | Atributos del mensaje (`TraceId`, `EventTopic`, `Timestamp`) como diccionario simple. |
+| `receive_count` | Cantidad de veces que SQS entregó el mensaje. Permite saber si es un reintento. |
+
+Si el cuerpo de un mensaje no es JSON válido, se registra un `CorruptedMessageError` (con la causa encadenada) y se continúa con el resto del lote. El mensaje corrupto **no se borra**, así que SQS lo reintenta y, al agotar los intentos, lo deriva a la DLQ.
+
+#### Manejo de errores
+
+Todas las llamadas a SQS capturan `ClientError` y `BotoCoreError`, y las traducen a excepciones de `exceptions.py` con un helper interno (`_wrap_boto_error`):
+
+| Situación | Excepción |
+| :--- | :--- |
+| El servicio responde con un error (cola inexistente, atributos inválidos) | `SQSConnectionError` |
+| No hay conexión con el endpoint (LocalStack apagado) | `SQSConnectionError` |
+| Timeout de conexión o de lectura | `QueueTimeoutError` |
+| Cuerpo del mensaje que no es JSON | `CorruptedMessageError` (se registra, no se levanta) |
+
+Cada excepción se re-lanza **encadenada** con `raise ... from err`, de modo que el traceback conserva el error original de Boto3, y con `add_note()` se agrega contexto: cola, `TraceId` o tópico según la operación, y el código de error de AWS. Esas notas llegan al log JSON porque el serializador de I4 las incluye. También se capturan los errores de `BotoCoreError` porque, con LocalStack apagado, Boto3 lanza `EndpointConnectionError`, que no es un `ClientError`: sin esta captura, la falla más común escaparía sin traducir y el `except* SQSConnectionError` de I5 no la atraparía.
+
+**Decisiones de diseño**
+
+- **Borrado explícito y posterior al procesamiento:** borrar al recibir convertiría la entrega en *at-most-once* y un fallo del despachador perdería el evento. Con el borrado separado (`delete_event`), el mensaje solo se elimina cuando el webhook fue entregado.
+- **Un mensaje corrupto no frena el lote:** levantar la excepción ante el primer JSON inválido dejaría sin procesar a los mensajes válidos recibidos en la misma llamada. Se registra y se sigue.
+- **Reintentos delegados a la infraestructura:** el módulo no implementa un contador de reintentos propio. La `RedrivePolicy` de SQS decide cuándo un mensaje pasa a la DLQ.
+- **Funciones síncronas con cliente inyectado:** todas reciben `sqs_client` como primer parámetro. Se crea una sola vez y se reutiliza, y el receptor puede ejecutar estas funciones con `asyncio.to_thread` (Boto3 es bloqueante). Además, permite reemplazar el cliente en las pruebas.
+- **Sin bloques `finally`:** el módulo cumple PEP 765 por construcción, y solo captura tipos de excepción concretos (nunca `BaseException`).
+
+**Limitaciones conocidas**
+
+- La cola estándar entrega *al menos una vez*: un mensaje podría procesarse dos veces (por ejemplo, si el despachador se cae después de enviar el webhook y antes de borrar). El `MessageId` y el `TraceId` permiten detectarlo, pero este módulo no descarta duplicados.
+- El `VisibilityTimeout` por defecto (30 s) debe ser mayor al tiempo que tarda el despachador en entregar el webhook; si lo supera, otro consumidor podría tomar el mismo mensaje.
+- Un mensaje corrupto se vuelve a recibir y a registrar como error hasta agotar `maxReceiveCount`, y recién ahí llega a la DLQ.
+- El módulo no consume la DLQ: solo la crea y la vincula. Para inspeccionarla se consulta con `get_queue_attributes` o con `receive_events` sobre su URL.
+
+**Uso**
+
+Con LocalStack levantado y desde la raíz del repositorio con `PYTHONPATH=src`:
+
+```python
+from vulcano_telemetry.core_sqs import (
+    get_sqs_client,
+    setup_queues,
+    send_event,
+    receive_events,
+    delete_event,
+)
+
+sqs = get_sqs_client("http://localhost:4566")
+queue_url, dlq_url = setup_queues(sqs)
+
+# Productor: publica un evento con TraceId, EventTopic y Timestamp.
+send_event(
+    sqs,
+    queue_url,
+    {"transaction_id": "tx_9981", "amount": 350.0},
+    event_topic="payment.completed",
+)
+
+# Consumidor: Long Polling y borrado explícito tras procesar.
+for evento in receive_events(sqs, queue_url, wait_time=5):
+    print(evento["body"], evento["attributes"])
+    delete_event(sqs, queue_url, evento["receipt_handle"])
+
+# Verificación de la DLQ (caso TC06).
+atributos = sqs.get_queue_attributes(
+    QueueUrl=dlq_url, AttributeNames=["ApproximateNumberOfMessages"]
+)
+print(atributos["Attributes"]["ApproximateNumberOfMessages"])
+```
 
 ### 4.4. Observabilidad y Logging JSON (Integrante 4)
 `logging_engine.py` genera registros JSON estructurados sin frenar al hilo que loguea. Escribir en disco es lento, así que esa tarea queda separada de la lógica del sistema, y todos los módulos usan el mismo pipeline.
