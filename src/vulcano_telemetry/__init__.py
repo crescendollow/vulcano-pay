@@ -1,3 +1,9 @@
+"""API pública de Vulcano Telemetry.
+
+Expone las excepciones del paquete y los validadores de configuración
+para poder importarlos directamente desde ``vulcano_telemetry``.
+"""
+
 from .exceptions import (
     VulcanoError,
     SQSConnectionError,
